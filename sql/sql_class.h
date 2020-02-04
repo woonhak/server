@@ -36,6 +36,7 @@
 #include "scheduler.h"      /* thd_scheduler */
 #include "protocol.h"       /* Protocol_text, Protocol_binary */
 #include "violite.h"        /* vio_is_connected */
+#include "table_cache.h"
 #include "thr_lock.h"       /* thr_lock_type, THR_LOCK_DATA, THR_LOCK_INFO */
 #include "thr_timer.h"
 #include "thr_malloc.h"
@@ -335,6 +336,27 @@ public:
     }
     return false;
   }
+  template <class... Args>
+  typename Base::iterator emplace(bool &inserted, Args&&... args) noexcept
+  {
+    try
+    {
+      auto ret= Base::emplace(std::forward<Args>(args)...);
+      inserted= ret.second;
+      return ret.first;
+    }
+    catch (std::bad_alloc())
+    {
+      my_error(ER_OUT_OF_RESOURCES, MYF(0));
+      return Base::end();
+    }
+    catch (...)
+    {
+      my_error(ER_INTERNAL_ERROR, MYF(0), "Unexpected exception");
+      return Base::end();
+    }
+    return Base::end();
+  }
 };
 
 
@@ -388,6 +410,18 @@ public:
       return NULL;
     return &*ret;
   }
+  template <class... Args>
+  const Key* emplace(bool *inserted, Args&&... args)
+  {
+    bool ins;
+    auto ret= exception_wrapper<std::set<Key, Compare, Allocator> >::
+      emplace(ins, std::forward<Args>(args)...);
+    if (inserted)
+      *inserted= ins;
+    if (ret == std::set<Key, Compare, Allocator>::end())
+      return NULL;
+    return &*ret;
+  }
 };
 
 
@@ -415,6 +449,18 @@ public:
       insert(std::make_pair(key, std::forward<T>(value)), ins);
     if (inserted)
       *inserted= ins;
+    return &ret->second;
+  }
+  template <class... Args>
+  T* emplace(bool *inserted, Args&&... args)
+  {
+    bool ins;
+    auto ret= exception_wrapper<std::map<Key, T, Compare, Allocator> >::
+      emplace(ins, std::forward<Args>(args)...);
+    if (inserted)
+      *inserted= ins;
+    if (ret == std::map<Key, T, Compare, Allocator>::end())
+      return NULL;
     return &ret->second;
   }
 };
@@ -830,6 +876,219 @@ enum killed_type
   KILL_TYPE_USER,
   KILL_TYPE_QUERY
 };
+
+
+enum ddl_log_entry_code
+{
+  /*
+    DDL_LOG_EXECUTE_CODE:
+      This is a code that indicates that this is a log entry to
+      be executed, from this entry a linked list of log entries
+      can be found and executed.
+    DDL_LOG_ENTRY_CODE:
+      An entry to be executed in a linked list from an execute log
+      entry.
+    DDL_IGNORE_LOG_ENTRY_CODE:
+      An entry that is to be ignored
+  */
+  DDL_LOG_EXECUTE_CODE = 'e',
+  DDL_LOG_ENTRY_CODE = 'l',
+  DDL_TRY_LOG_ENTRY_CODE = 't',
+  DDL_IGNORE_LOG_ENTRY_CODE = 'i'
+};
+
+enum ddl_log_action_code
+{
+  /*
+    The type of action that a DDL_LOG_ENTRY_CODE entry is to
+    perform.
+    DDL_LOG_DELETE_ACTION:
+      Delete an entity
+    DDL_LOG_RENAME_ACTION:
+      Rename an entity
+    DDL_LOG_REPLACE_ACTION:
+      Rename an entity after removing the previous entry with the
+      new name, that is replace this entry.
+    DDL_LOG_EXCHANGE_ACTION:
+      Exchange two entities by renaming them a -> tmp, b -> a, tmp -> b.
+  */
+  DDL_LOG_DELETE_ACTION = 'd',
+  DDL_LOG_RENAME_ACTION = 'r',
+  DDL_LOG_REPLACE_ACTION = 's',
+  DDL_LOG_EXCHANGE_ACTION = 'e'
+};
+
+enum enum_ddl_log_exchange_phase {
+  EXCH_PHASE_NAME_TO_TEMP= 0,
+  EXCH_PHASE_FROM_TO_NAME= 1,
+  EXCH_PHASE_TEMP_TO_FROM= 2
+};
+
+
+typedef struct st_ddl_log_entry
+{
+  const char *name;
+  const char *from_name;
+  const char *handler_name;
+  const char *tmp_name;
+  uint next_entry;
+  uint entry_pos;
+  enum ddl_log_entry_code entry_type;
+  enum ddl_log_action_code action_type;
+  /*
+    Most actions have only one phase. REPLACE does however have two
+    phases. The first phase removes the file with the new name if
+    there was one there before and the second phase renames the
+    old name to the new name.
+  */
+  char phase;
+} DDL_LOG_ENTRY;
+
+
+typedef struct st_ddl_log_memory_entry
+{
+  uint entry_pos;
+  struct st_ddl_log_memory_entry *next_log_entry;
+  struct st_ddl_log_memory_entry *prev_log_entry;
+  struct st_ddl_log_memory_entry *next_active_log_entry;
+} DDL_LOG_MEMORY_ENTRY;
+
+
+struct ddl_log_info
+{
+  DDL_LOG_MEMORY_ENTRY *first_entry;
+  DDL_LOG_MEMORY_ENTRY *exec_entry;
+#ifndef DBUG_OFF
+  bool dbg_fail;
+#endif
+  ddl_log_info() : first_entry(NULL), exec_entry(NULL) {}
+  ~ddl_log_info()
+  {
+    // write_log_finish() must be called
+    DBUG_ASSERT(!first_entry);
+  }
+  void release();
+  bool write_log_replace_delete_file(const char *from_path, const char *to_path,
+                                    bool replace_flag);
+
+  void write_log_finish();
+};
+
+
+class FK_backup
+{
+public:
+  DDL_LOG_MEMORY_ENTRY *delete_shadow_entry;
+  DDL_LOG_MEMORY_ENTRY *restore_backup_entry;
+  bool update_frm;
+  Table_name old_name;
+
+  FK_backup() :
+    delete_shadow_entry(NULL),
+    restore_backup_entry(NULL),
+    update_frm(false)
+  {}
+  virtual ~FK_backup()
+  {}
+  FK_list foreign_keys;
+  FK_list referenced_keys;
+  int fk_write_shadow_frm(ddl_log_info& log_info);
+  bool fk_backup_frm(ddl_log_info& log_info);
+  bool fk_install_shadow_frm(ddl_log_info& log_info);
+  void fk_drop_shadow_frm(ddl_log_info& log_info);
+  void fk_drop_backup_frm(ddl_log_info& log_info);
+  virtual TABLE_SHARE *get_share() const= 0;
+};
+
+
+// NB: used for ALTER TABLE
+class FK_share_backup : public FK_backup
+{
+protected:
+  TABLE_SHARE *share;
+
+public:
+  bool init(TABLE_SHARE *_share);
+
+  FK_share_backup(TABLE_SHARE *_share)
+  {
+    if (init(_share))
+      share= NULL;
+  }
+  TABLE_SHARE *get_share() const
+  {
+    return share;
+  }
+  void rollback(ddl_log_info& log_info);
+};
+
+
+// NB: FK_ddl_backup responds for share release unlike FK_share_backup
+class FK_ddl_backup : public FK_share_backup
+{
+  /* NB: if sa.share is not empty, share is auto-released on destructor */
+  Share_acquire sa;
+  /*
+     NB: if sa.share is not empty, share == sa.share. ALTER algorithms are more
+     complex and shares are held and released in separate container alter_ctx.fk_shares.
+     To make DDL logging common for all commands we handle it via FK_backup_storage interface, but
+     without templating and virtual interfaces (these are overcomplexity for only 2 variants)
+     we have to converge backup operations into single FK_ddl_backup.
+  */
+
+public:
+  FK_ddl_backup(Share_acquire&& _sa);
+  FK_ddl_backup(const FK_ddl_backup&)= delete; // (explict reminder for default)
+  FK_ddl_backup(FK_ddl_backup&& src) :
+    FK_share_backup(std::move(src)),
+    sa(std::move(src.sa)) {}
+
+  // used by ALTER and fk_upgrade_legacy_storage()
+  FK_ddl_backup(TABLE_SHARE *_share) : FK_share_backup(_share)
+  {}
+
+  FK_ddl_backup& operator=(FK_ddl_backup&& src)
+  {
+    *((FK_share_backup *) this)= std::move(src);
+    sa= std::move(src.sa);
+    return *this;
+  }
+
+  bool backup_frm(ddl_log_info &log_info, Table_name table);
+};
+
+#ifndef DBUG_OFF
+// NB: we do want definite order of shares in test cases
+struct TABLE_SHARE_by_name
+{
+  bool operator() (const TABLE_SHARE *s1, const TABLE_SHARE *s2) const
+  {
+    return s1->cmp_db_table(s2->db, s2->table_name) < 0;
+  }
+};
+#endif
+
+
+/*
+   NB: again, ALTER does require duplicate check hence mbd::map is used, while other commands
+   do not require and mbd::vector is enough. To avoid templating or code complexity via virtual
+   ifaces we just use mbd::map for everything. We are not going to hit bottleneck here:
+   it is DDL (rare operation), it is less than hundred of foreign keys normally.
+*/
+class FK_backup_storage: public mbd::map<TABLE_SHARE *, FK_ddl_backup
+#ifndef DBUG_OFF
+                                         , TABLE_SHARE_by_name
+#endif
+                         >,
+                         public ddl_log_info
+{
+public:
+  int write_shadow_frms();
+  bool install_shadow_frms();
+  void drop_backup_frms(THD *thd);
+  void rollback(THD *thd);
+};
+
 
 #include "sql_lex.h"				/* Must be here */
 
