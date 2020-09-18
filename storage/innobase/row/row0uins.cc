@@ -383,6 +383,7 @@ static bool row_undo_ins_parse_undo_rec(undo_node_t* node, bool dict_locked)
 		ut_ad("wrong undo record type" == 0);
 		goto close_table;
 	case TRX_UNDO_INSERT_METADATA:
+	case TRX_UNDO_UNEMPTY:
 	case TRX_UNDO_INSERT_REC:
 		break;
 	case TRX_UNDO_RENAME_TABLE:
@@ -426,7 +427,10 @@ close_table:
 					node->heap);
 			} else {
 				node->ref = &trx_undo_metadata;
-				if (!row_undo_search_clust_to_pcur(node)) {
+
+				if (node->rec_type == TRX_UNDO_UNEMPTY)
+				else if (!row_undo_search_clust_to_pcur(
+							node)) {
 					/* An error probably occurred during
 					an insert into the clustered index,
 					after we wrote the undo log record. */
@@ -434,6 +438,7 @@ close_table:
 				}
 				return true;
 			}
+
 
 			if (!row_undo_search_clust_to_pcur(node)) {
 				/* An error probably occurred during
@@ -596,6 +601,11 @@ row_undo_ins(
 		log_free_check();
 		ut_ad(!node->table->is_temporary());
 		err = row_undo_ins_remove_clust_rec(node);
+		break;
+	case TRX_UNDO_UNEMPTY:
+		node->table->empty_table();
+		err = DB_SUCCESS;
+		break;
 	}
 
 	dict_table_close(node->table, dict_locked, FALSE);
