@@ -4047,6 +4047,7 @@ public:
   }
   int killed_errno();
   void reset_killed();
+    // THD::wsrep_aborter is protected by LOCK_thd_data mutex
   inline void reset_kill_query()
   {
     if (killed < KILL_CONNECTION)

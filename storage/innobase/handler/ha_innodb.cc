@@ -1233,7 +1233,7 @@ innobase_close_connection(
 
 /** Cancel any pending lock request associated with the current THD.
 @sa THD::awake() @sa ha_kill_query() */
-static void innobase_kill_query(handlerton*, THD* thd, enum thd_kill_levels);
+static void innobase_kill_query(handlerton*, THD* thd, enum thd_kill_levels level);
 static void innobase_commit_ordered(handlerton *hton, THD* thd, bool all);
 
 /*****************************************************************//**
@@ -5079,9 +5079,39 @@ UNIV_INTERN void lock_cancel_waiting_and_release(lock_t* lock);
 
 /** Cancel any pending lock request associated with the current THD.
 @sa THD::awake() @sa ha_kill_query() */
-static void innobase_kill_query(handlerton*, THD *thd, enum thd_kill_levels)
+static void innobase_kill_query(handlerton*, THD *thd, enum thd_kill_levels level)
 {
   DBUG_ENTER("innobase_kill_query");
+
+  if (level == THD_WSREP_MARK_VICTIM)
+  {
+    if (trx_t *trx= thd_to_trx(thd))
+    {
+      /*
+        not a direct kill, but just marking the victim for
+        later aborting locking mutexes in agreed locking
+        order, last to lock is victim thd LOCK_thd_data
+        mutex victim thd's wsrep_aborter is set while holding
+        all mutexes. We miss to see if victim was already
+        marked for abort by some other killer but that does
+        not matter here.
+        Finally releasing all mutexes in reverse order
+      */
+      lock_mutex_enter();
+      mutex_enter(&trx_sys.mutex);
+      trx_mutex_enter(trx);
+      wsrep_thd_LOCK(thd);
+      if (wsrep_thd_set_wsrep_aborter(thd, thd))
+      {
+        WSREP_DEBUG("innodb kill transaction skipped");
+      }
+      wsrep_thd_UNLOCK(thd);
+      mutex_exit(&trx_sys.mutex);
+      trx_mutex_exit(trx);
+      lock_mutex_exit();
+    }
+    DBUG_VOID_RETURN;
+  }
 
   if (trx_t* trx= thd_to_trx(thd))
   {
@@ -18581,7 +18611,9 @@ comparison as in the local certification failure.
 
 @param[in]	bf_thd		Brute force (BF) thread
 @param[in,out]	victim_trx	Vimtim trx to be killed
-@param[in]	signal		Should victim be signaled */
+@param[in]	signal		Should victim be killed
+				with THD::awake() or
+				replayed */
 UNIV_INTERN
 int
 wsrep_innobase_kill_one_trx(
@@ -18598,6 +18630,7 @@ wsrep_innobase_kill_one_trx(
 
 	THD *thd= (THD *) victim_trx->mysql_thd;
 	ut_ad(thd);
+
 	/* Note that bf_trx might not exist here e.g. on MDL conflict
 	case (test: galera_concurrent_ctas). Similarly, BF thread
 	could be also acquiring MDL-lock causing victim to be
@@ -18606,13 +18639,11 @@ wsrep_innobase_kill_one_trx(
 	trx_t* bf_trx= thd_to_trx(bf_thd);
 	DBUG_ASSERT(wsrep_on(bf_thd));
 
-	wsrep_thd_LOCK(thd);
-
 	WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
 
 	WSREP_DEBUG("Aborter %s trx_id: " TRX_ID_FMT " thread: %ld "
-		"seqno: %lld client_state: %s client_mode: %s transaction_mode: %s "
-		"query: %s",
+		"seqno: %lld client_state: %s client_mode: %s "
+		"transaction_mode: %s query: %s",
 		wsrep_thd_is_BF(bf_thd, false) ? "BF" : "normal",
 		bf_trx ? bf_trx->id : TRX_ID_MAX,
 		thd_get_thread_id(bf_thd),
@@ -18623,8 +18654,8 @@ wsrep_innobase_kill_one_trx(
 		wsrep_thd_query(bf_thd));
 
 	WSREP_DEBUG("Victim %s trx_id: " TRX_ID_FMT " thread: %ld "
-		"seqno: %lld client_state: %s  client_mode: %s transaction_mode: %s "
-		"query: %s",
+		"seqno: %lld client_state: %s  client_mode: %s "
+		"transaction_mode: %s query: %s",
 		wsrep_thd_is_BF(thd, false) ? "BF" : "normal",
 		victim_trx->id,
 		thd_get_thread_id(thd),
@@ -18634,8 +18665,21 @@ wsrep_innobase_kill_one_trx(
 		wsrep_thd_transaction_state_str(thd),
 		wsrep_thd_query(thd));
 
-	/* Mark transaction as a victim for Galera abort */
-	victim_trx->lock.was_chosen_as_wsrep_victim= true;
+	/* In this sync point we are holding lock_sys->mutex and
+	victim_trx->mutex but wsrep_aborter is not yet set and
+	we are not yet holding victim_thread->LOCK_thd_data */
+	DBUG_EXECUTE_IF("sync.wsrep_innobase_kill_one_trx_before_LOCK_thd_data",
+	{
+		const char act[]=
+			"now "
+			"SIGNAL sync.wsrep_innobase_kill_one_trx_before_LOCK_thd_data "
+			"WAIT_FOR signal.wsrep_innobase_kill_one_trx_before_LOCK_thd_data";
+		DBUG_ASSERT(!debug_sync_set_action(bf_thd,
+						   STRING_WITH_LEN(act)));
+	};);
+
+	wsrep_thd_LOCK(thd);
+
 	if (wsrep_thd_set_wsrep_aborter(bf_thd, thd))
 	{
 	  WSREP_DEBUG("innodb kill transaction skipped due to wsrep_aborter set");
@@ -18643,6 +18687,21 @@ wsrep_innobase_kill_one_trx(
 	  DBUG_RETURN(0);
 	}
 
+	/* At this point we either have set thd->wsrep_aborter
+	or someone else has set it and we did not continue bf
+	kill. */
+	DBUG_EXECUTE_IF("sync.wsrep_innobase_kill_one_trx_before_awake",
+        {
+		const char act[]=
+			"now "
+			"SIGNAL sync.wsrep_innobase_kill_one_trx_before_awake "
+			"WAIT_FOR signal.wsrep_innobase_kill_one_trx_before_awake";
+		DBUG_ASSERT(!debug_sync_set_action(bf_thd,
+						   STRING_WITH_LEN(act)));
+	};);
+
+	/* Mark transaction as a victim for Galera abort */
+	victim_trx->lock.was_chosen_as_wsrep_victim= true;
 	/* Note that we need to release this as it will be acquired
 	below in wsrep-lib */
 	wsrep_thd_UNLOCK(thd);
@@ -18653,7 +18712,7 @@ wsrep_innobase_kill_one_trx(
 		lock_t*  wait_lock = victim_trx->lock.wait_lock;
 		if (wait_lock) {
 			DBUG_ASSERT(victim_trx->is_wsrep());
-			WSREP_DEBUG("victim has wait flag: %lu",
+			WSREP_DEBUG("Victim has wait flag: %lu",
 				    thd_get_thread_id(thd));
 
 			WSREP_DEBUG("canceling wait lock");
