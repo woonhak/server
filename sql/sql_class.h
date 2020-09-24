@@ -4023,6 +4023,7 @@ public:
   }
   int killed_errno();
   void reset_killed();
+    // THD::wsrep_aborter is protected by LOCK_thd_data mutex
   inline void reset_kill_query()
   {
     if (killed < KILL_CONNECTION)
@@ -4757,6 +4758,8 @@ public:
     table updates from being replicated to other nodes via galera replication.
   */
   bool                      wsrep_ignore_table;
+  /* thread who has started kill for this THD protected by LOCK_thd_data*/
+  my_thread_id              wsrep_aborter;
   wsrep_gtid_t              wsrep_sync_wait_gtid;
   ulong                     wsrep_affected_rows;
   bool                      wsrep_replicate_GTID;

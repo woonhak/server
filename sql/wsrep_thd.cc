@@ -835,6 +835,28 @@ bool wsrep_thd_has_explicit_locks(THD *thd)
   return thd->mdl_context.has_explicit_locks();
 }
 
+extern "C" bool wsrep_thd_set_wsrep_aborter(THD *bf_thd, THD *victim_thd)
+{
+  // THD::wsrep_aborter is protected by LOCK_thd_data mutex
+  mysql_mutex_assert_owner(&victim_thd->LOCK_thd_data);
+  if (!bf_thd)
+  {
+    victim_thd->wsrep_aborter= 0;
+    WSREP_DEBUG("wsrep_thd_set_wsrep_aborter resetting wsrep_aborter");
+    return false;
+  }
+  // When wsrep_aborter == 0 no other thread has started abort
+  // When wsrep_aborter != bf_thd->thread_id other thread has started abort
+  if (victim_thd->wsrep_aborter && victim_thd->wsrep_aborter != bf_thd->thread_id)
+  {
+    return true;
+  }
+  victim_thd->wsrep_aborter= bf_thd->thread_id;
+  WSREP_DEBUG("wsrep_thd_set_wsrep_aborter setting wsrep_aborter %lu",
+              victim_thd->wsrep_aborter);
+  return false;
+}
+
 /*
   Get auto increment variables for THD. Use global settings for
   applier threads.
