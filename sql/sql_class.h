@@ -3754,13 +3754,19 @@ public:
       Resetting killed has to be done under a mutex to ensure
       its not done during an awake() call.
     */
+    mysql_mutex_lock(&LOCK_thd_data);
+    mysql_mutex_lock(&LOCK_thd_kill);
     if (killed != NOT_KILLED)
     {
-      mysql_mutex_lock(&LOCK_thd_kill);
       killed= NOT_KILLED;
       killed_err= 0;
-      mysql_mutex_unlock(&LOCK_thd_kill);
     }
+#ifdef WITH_WSREP
+    // THD::wsrep_aborter is protected by LOCK_thd_data mutex
+    wsrep_aborter= 0;
+#endif /* WITH_WSREP */
+    mysql_mutex_unlock(&LOCK_thd_data);
+    mysql_mutex_unlock(&LOCK_thd_kill);
   }
   inline void reset_kill_query()
   {
@@ -4466,6 +4472,8 @@ public:
     table updates from being replicated to other nodes via galera replication.
   */
   bool                      wsrep_ignore_table;
+  /* thread who has started kill for this THD protected by LOCK_thd_data*/
+  my_thread_id              wsrep_aborter;
   wsrep_gtid_t              wsrep_sync_wait_gtid;
   ulong                     wsrep_affected_rows;
   bool                      wsrep_replicate_GTID;
