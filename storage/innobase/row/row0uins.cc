@@ -428,7 +428,7 @@ close_table:
 			} else {
 				node->ref = &trx_undo_metadata;
 
-				if (node->rec_type == TRX_UNDO_UNEMPTY)
+				if (node->rec_type == TRX_UNDO_UNEMPTY);
 				else if (!row_undo_search_clust_to_pcur(
 							node)) {
 					/* An error probably occurred during

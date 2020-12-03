@@ -1456,6 +1456,10 @@ void dict_table_t::assign_stat_n_rows()
   btr_pcur_move_to_next_user_rec(&pcur, &mtr);
   if (!rec_is_metadata(btr_pcur_get_rec(&pcur), *clust_index))
     btr_pcur_move_to_prev_on_page(&pcur);
+  else if (rec_is_alter_metadata(btr_pcur_get_rec(&pcur),
+				 *clust_index))
+    non_empty= true;
+
   ulint n_rows= 0;
 scan_leaf:
   cur= btr_pcur_get_page_cur(&pcur);

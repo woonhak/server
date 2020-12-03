@@ -5837,6 +5837,10 @@ add_all_virtual:
 			goto func_exit;
 		}
 
+		if (rec_is_alter_metadata(rec, *index)) {
+			user_table->non_empty= true;
+		}
+
 		/* Ensure that the root page is in the correct format. */
 		buf_block_t* root = btr_root_block_get(index, RW_X_LATCH,
 						       &mtr);
