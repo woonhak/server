@@ -1954,7 +1954,7 @@ struct dict_table_t {
 			size_t *db_name_len, size_t *tbl_name_len) const;
 
 	/** Assign n_stat_rows in dict_table_t */
-	void assign_stat_n_rows();
+	void assign_non_empty();
 
 	/** Empty the table */
 	void empty_table();

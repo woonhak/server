@@ -1407,7 +1407,7 @@ void dict_table_t::empty_table()
         || index->online_status == ONLINE_INDEX_ABORTED_DROPPED)
       continue;
 
-    if (index->page == FIL_NULL && index->type & DICT_FTS)
+    if (index->type & DICT_FTS)
       continue;
 
     if (index->online_status == ONLINE_INDEX_CREATION)
@@ -1432,9 +1432,9 @@ void dict_table_t::empty_table()
   remove_bulk_trx();
 }
 
-void dict_table_t::assign_stat_n_rows()
+void dict_table_t::assign_non_empty()
 {
-  if (!space || !is_readable())
+  if (!space || !is_readable() || non_empty)
     return;
 
   dict_index_t* clust_index= dict_table_get_first_index(this);
@@ -1451,17 +1451,18 @@ void dict_table_t::assign_stat_n_rows()
   if (!is_readable())
   {
     mtr.commit();
-    return ;
+    return;
   }
   btr_pcur_move_to_next_user_rec(&pcur, &mtr);
   if (!rec_is_metadata(btr_pcur_get_rec(&pcur), *clust_index))
     btr_pcur_move_to_prev_on_page(&pcur);
   else if (rec_is_alter_metadata(btr_pcur_get_rec(&pcur),
 				 *clust_index))
+  {
     non_empty= true;
-
-  ulint n_rows= 0;
-scan_leaf:
+    mtr.commit();
+    return;
+  }
   cur= btr_pcur_get_page_cur(&pcur);
   page_cur_move_to_next(cur);
 next_page:
@@ -1471,9 +1472,6 @@ next_page:
     if (next_page_no == FIL_NULL)
     {
       mtr.commit();
-      stat_n_rows= n_rows;
-      if (n_rows)
-	non_empty= true;
       return;
     }
 
@@ -1492,13 +1490,12 @@ next_page:
   }
 
   rec= page_cur_get_rec(cur);
-  if (rec_get_deleted_flag(rec, dict_table_is_comp(this)));
-  else if (!page_rec_is_supremum(rec))
-    n_rows++;
-  else
+  if (page_rec_is_supremum(rec))
   {
     next_page= true;
     goto next_page;
   }
-  goto scan_leaf;
+  non_empty= true;
+  mtr.commit();
+  return;
 }

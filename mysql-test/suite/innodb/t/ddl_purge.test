@@ -5,6 +5,10 @@
 CREATE TABLE t0 (pk INT PRIMARY KEY) ENGINE=InnoDB;
 CREATE TABLE t1 (pk INT PRIMARY KEY, b INT) ENGINE=InnoDB;
 
+# First insert in the table takes X-lock
+# So concurrent DML could be blocked
+INSERT INTO t0 VALUES(100);
+
 --connect (con1,localhost,root,,test)
 BEGIN;
 INSERT INTO t0 SET pk=1;

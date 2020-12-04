@@ -5737,9 +5737,7 @@ ha_innobase::open(const char* name, int, uint)
 		}
 	}
 
-	if (!ib_table->non_empty) {
-		ib_table->assign_stat_n_rows();
-	}
+	ib_table->assign_non_empty();
 
 	m_prebuilt = row_create_prebuilt(ib_table, table->s->reclength);
 
@@ -7515,7 +7513,6 @@ ha_innobase::write_row(
 
 	if (m_prebuilt->table->can_bulk_op()
 	    && lock_table_has(trx, m_prebuilt->table, LOCK_X)) {
-		// bulk index code
 		m_prebuilt->table->bulk_trx_id = trx->id;
 	}
 
