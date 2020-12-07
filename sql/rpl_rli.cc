@@ -1456,7 +1456,30 @@ bool Relay_log_info::stmt_done(my_off_t event_master_log_pos, THD *thd,
     rgi->inc_event_relay_log_pos();
   else
   {
-    inc_group_relay_log_pos(event_master_log_pos, rgi);
+    if (rgi->is_parallel_exec)
+    {
+      mysql_mutex_lock(&data_lock);
+      inc_group_relay_log_pos(event_master_log_pos, rgi, TRUE);
+      DBUG_EXECUTE_IF("inject_crash_before_flush_rli", DBUG_SUICIDE(););
+      /*
+        In parallel replication, flush has to be performed under the protection
+        of rli->data_lock to prevent relay_log.info file corruption.
+      */
+      if (mi->using_gtid == Master_info::USE_GTID_NO)
+        if (flush())
+          error=1;
+      DBUG_EXECUTE_IF("inject_crash_after_flush_rli", DBUG_SUICIDE(););
+      mysql_mutex_unlock(&data_lock);
+    }
+    else
+    {
+      inc_group_relay_log_pos(event_master_log_pos, rgi);
+      DBUG_EXECUTE_IF("inject_crash_before_flush_rli", DBUG_SUICIDE(););
+      if (mi->using_gtid == Master_info::USE_GTID_NO)
+        if (flush())
+          error=1;
+      DBUG_EXECUTE_IF("inject_crash_after_flush_rli", DBUG_SUICIDE(););
+    }
     if (rpl_global_gtid_slave_state->record_and_update_gtid(thd, rgi))
     {
       report(WARNING_LEVEL, ER_CANNOT_UPDATE_GTID_STATE, rgi->gtid_info(),
@@ -1471,17 +1494,6 @@ bool Relay_log_info::stmt_done(my_off_t event_master_log_pos, THD *thd,
         DBA aware of the problem in the error log.
       */
     }
-    DBUG_EXECUTE_IF("inject_crash_before_flush_rli", DBUG_SUICIDE(););
-    if (mi->using_gtid == Master_info::USE_GTID_NO)
-    {
-      if (rgi->is_parallel_exec)
-        mysql_mutex_lock(&data_lock);
-      if (flush())
-        error= 1;
-      if (rgi->is_parallel_exec)
-        mysql_mutex_unlock(&data_lock);
-    }
-    DBUG_EXECUTE_IF("inject_crash_after_flush_rli", DBUG_SUICIDE(););
   }
   DBUG_RETURN(error);
 }
