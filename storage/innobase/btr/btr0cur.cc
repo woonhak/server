@@ -3242,6 +3242,19 @@ btr_cur_ins_lock_and_undo(
 	      || (flags & BTR_CREATE_FLAG));
 	ut_ad(mtr->is_named_space(index->table->space));
 
+	if (thr){
+		trx_t* trx = thr_get_trx(thr);
+
+		if (index->table->is_bulk_trx(trx->id)
+		    && !UT_LIST_GET_LEN(trx->trx_savepoints)
+		    && trx->xid->is_null()
+		    && (!trx->mod_tables.empty()
+			&& trx->mod_tables.find(index->table)
+			   != trx->mod_tables.end())) {
+			flags|= BTR_NO_UNDO_LOG_FLAG;
+		}
+	}
+
 	/* Check if there is predicate or GAP lock preventing the insertion */
 	if (!(flags & BTR_NO_LOCKING_FLAG)) {
 		if (dict_index_is_spatial(index)) {
@@ -3582,7 +3595,7 @@ fail_err:
 	} else if (entry->info_bits & REC_INFO_MIN_REC_FLAG) {
 		ut_ad(entry->is_metadata());
 		ut_ad(index->is_instant());
-		ut_ad(flags == BTR_NO_LOCKING_FLAG);
+		ut_ad(flags & BTR_NO_LOCKING_FLAG);
 	} else {
 		rw_lock_t* ahi_latch = btr_search_sys.get_latch(*index);
 		if (!reorg && cursor->flag == BTR_CUR_HASH) {
@@ -5522,6 +5535,7 @@ btr_cur_optimistic_delete_func(
 			if (index->is_instant()) {
 				/* MDEV-17383: free metadata BLOBs! */
 				index->clear_instant_alter();
+				index->table->remove_bulk_trx();
 			}
 			page_cur_set_after_last(block,
 						btr_cur_get_page_cur(cursor));
@@ -5739,6 +5753,7 @@ btr_cur_pessimistic_delete(
 				if (index->is_instant()) {
 					/* MDEV-17383: free metadata BLOBs! */
 					index->clear_instant_alter();
+					index->table->remove_bulk_trx();
 				}
 				page_cur_set_after_last(
 					block,

@@ -1368,6 +1368,9 @@ public:
 	everything in overflow) size of the longest possible row and index
 	of a field which made index records too big to fit on a page.*/
 	inline record_size_info_t record_size_info() const;
+
+	/** Empty the index content and reinitialize the root page */
+	void empty(que_thr_t *thr);
 };
 
 /** Detach a virtual column from an index.
@@ -1950,6 +1953,25 @@ struct dict_table_t {
 			char (&tbl_name)[NAME_LEN + 1],
 			size_t *db_name_len, size_t *tbl_name_len) const;
 
+  /** Empty the table */
+  void empty_table(que_thr_t *thr);
+
+  /** Set bulk operation */
+  void set_bulk_trx(ulint trx_id)
+  {
+    bulk_trx_id= trx_id;
+  }
+
+  void remove_bulk_trx()
+  {
+    bulk_trx_id= 0;
+  }
+
+  bool is_bulk_trx(ulint trx_id)
+  {
+    return bulk_trx_id == trx_id;
+  }
+
 private:
 	/** Initialize instant->field_map.
 	@param[in]	table	table definition to copy from */
@@ -2316,6 +2338,10 @@ public:
 	/** mysql_row_templ_t for base columns used for compute the virtual
 	columns */
 	dict_vcol_templ_t*			vc_templ;
+
+	/** Trx id of bulk operation. This is under the protection of
+	exclusive lock of table object */
+	trx_id_t				bulk_trx_id;
 };
 
 inline void dict_index_t::set_modified(mtr_t& mtr) const
