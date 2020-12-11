@@ -4397,6 +4397,16 @@ early_not_found:
 		DBUG_RETURN(DB_END_OF_INDEX);
 	}
 
+	if (trx_id_t bulk_trx_id = index->table->bulk_trx_id) {
+		if (trx->isolation_level != TRX_ISO_READ_UNCOMMITTED
+		    && trx->read_view.is_open()
+		    && !trx->read_view.changes_visible(
+				bulk_trx_id, index->table->name)) {
+			trx->op_info = "";
+			DBUG_RETURN(DB_END_OF_INDEX);
+		}
+	}
+
 	/* if the query is a plain locking SELECT, and the isolation level
 	is <= TRX_ISO_READ_COMMITTED, then this is set to FALSE */
 	bool did_semi_consistent_read = false;

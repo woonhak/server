@@ -295,7 +295,9 @@ record */
 					a not delete marked record; also the
 					fields of the record can change */
 #define	TRX_UNDO_DEL_MARK_REC	14	/* delete marking of a record; fields
-					do not change */
+					   do not change */
+#define TRX_UNDO_EMPTY		15      /* Empty the table */
+
 #define	TRX_UNDO_CMPL_INFO_MULT	16U	/* compilation info is multiplied by
 					this and ORed to the type above */
 #define	TRX_UNDO_UPD_EXTERN	128U	/* This bit can be ORed to type_cmpl

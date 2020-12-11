@@ -54,7 +54,9 @@ enum row_tab_op {
 	/** Update a record in place */
 	ROW_T_UPDATE,
 	/** Delete (purge) a record */
-	ROW_T_DELETE
+	ROW_T_DELETE,
+	/** Empty the table */
+	ROW_T_EMPTY
 };
 
 /** Index record modification operations during online index creation */
@@ -62,7 +64,9 @@ enum row_op {
 	/** Insert a record */
 	ROW_OP_INSERT = 0x61,
 	/** Delete a record */
-	ROW_OP_DELETE
+	ROW_OP_DELETE,
+	/** Empy the index */
+	ROW_OP_EMPTY
 };
 
 /** Size of the modification log entry header, in bytes */
@@ -339,8 +343,8 @@ row_log_online_op(
 	ulint		avail_size;
 	row_log_t*	log;
 
-	ut_ad(dtuple_validate(tuple));
-	ut_ad(dtuple_get_n_fields(tuple) == dict_index_get_n_fields(index));
+	ut_ad(!tuple || dtuple_validate(tuple));
+	ut_ad(!tuple || dtuple_get_n_fields(tuple) == dict_index_get_n_fields(index));
 	ut_ad(rw_lock_own_flagged(&index->lock,
 				  RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
 
@@ -354,14 +358,19 @@ row_log_online_op(
 	row_merge_buf_encode(), because here we do not encode
 	extra_size+1 (and reserve 0 as the end-of-chunk marker). */
 
-	size = rec_get_converted_size_temp(
-		index, tuple->fields, tuple->n_fields, &extra_size);
-	ut_ad(size >= extra_size);
-	ut_ad(size <= sizeof log->tail.buf);
+	if (!tuple) {
+		mrec_size = 4;
+		extra_size = 0;
+	} else {
+		size = rec_get_converted_size_temp(
+			index, tuple->fields, tuple->n_fields, &extra_size);
+		ut_ad(size >= extra_size);
+		ut_ad(size <= sizeof log->tail.buf);
 
-	mrec_size = ROW_LOG_HEADER_SIZE
-		+ (extra_size >= 0x80) + size
-		+ (trx_id ? DATA_TRX_ID_LEN : 0);
+		mrec_size = ROW_LOG_HEADER_SIZE
+			+ (extra_size >= 0x80) + size
+			+ (trx_id ? DATA_TRX_ID_LEN : 0);
+	}
 
 	log = index->online_log;
 	mutex_enter(&log->mutex);
@@ -390,6 +399,8 @@ row_log_online_op(
 		*b++ = ROW_OP_INSERT;
 		trx_write_trx_id(b, trx_id);
 		b += DATA_TRX_ID_LEN;
+	} else if (tuple == nullptr) {
+		*b++ = ROW_OP_EMPTY;
 	} else {
 		*b++ = ROW_OP_DELETE;
 	}
@@ -402,9 +413,15 @@ row_log_online_op(
 		*b++ = (byte) extra_size;
 	}
 
-	rec_convert_dtuple_to_temp(
-		b + extra_size, index, tuple->fields, tuple->n_fields);
-	b += size;
+	if (tuple) {
+		rec_convert_dtuple_to_temp(
+			b + extra_size, index, tuple->fields,
+			tuple->n_fields);
+		b += size;
+	} else {
+		*b++ = 0;
+		*b++ = 0;
+	}
 
 	if (mrec_size >= avail_size) {
 		const os_offset_t	byte_offset
@@ -2399,6 +2416,18 @@ func_exit_committed:
 	goto func_exit;
 }
 
+/** Applies the empty table to a table that was rebuilt.
+@param  index   clustered index
+@retrun success if index gets emptied */
+static
+dberr_t
+row_log_table_apply_empty(dict_index_t* index, que_thr_t *thr)
+{
+  dict_table_t* new_table= index->online_log->table;
+  new_table->empty_table(thr);
+  return DB_SUCCESS;
+}
+
 /******************************************************//**
 Applies an operation to a table that was rebuilt.
 @return NULL on failure (mrec corruption) or when out of data;
@@ -2668,6 +2697,11 @@ row_log_table_apply_op(
 		*error = row_log_table_apply_update(
 			thr, new_trx_id_col,
 			mrec, offsets, offsets_heap, heap, dup, old_pk);
+		break;
+	case ROW_T_EMPTY:
+		*error = row_log_table_apply_empty(dup->index, thr);
+		log->head.total += 4;
+		next_mrec = mrec + 3;
 		break;
 	}
 
@@ -3454,6 +3488,9 @@ row_log_apply_op_low(
 			}
 
 			goto duplicate;
+		case ROW_OP_EMPTY:
+			ut_ad(0);
+			break;
 		}
 	} else {
 		switch (op) {
@@ -3524,6 +3561,9 @@ insert_the_rec:
 				&rec, &big_rec,
 				0, NULL, &mtr);
 			ut_ad(!big_rec);
+			break;
+		case ROW_OP_EMPTY:
+			ut_ad(0);
 			break;
 		}
 		mem_heap_empty(offsets_heap);
@@ -3600,6 +3640,17 @@ row_log_apply_op(
 		op = static_cast<enum row_op>(*mrec++);
 		trx_id = 0;
 		break;
+	case ROW_OP_EMPTY:
+	{
+		mem_heap_t* heap = mem_heap_create(512);
+		que_fork_t* fork = que_fork_create(
+			NULL, NULL, QUE_FORK_MYSQL_INTERFACE, heap);
+		que_thr_t* thr = que_thr_create(fork, heap, nullptr);
+		index->empty(thr);
+		*error = DB_SUCCESS;
+		mem_heap_free(heap);
+		return mrec + 4;
+	}
 	default:
 corrupted:
 		ut_ad(0);
@@ -4041,4 +4092,18 @@ row_log_apply(
 	row_log_free(log);
 
 	DBUG_RETURN(error);
+}
+
+void row_log_table_empty(dict_index_t *index)
+{
+  row_log_t* log= index->online_log;
+  ulint	avail_size;
+  if (byte* b = row_log_table_open(log, 4, &avail_size))
+  {
+    *b++ = ROW_T_EMPTY;
+    *b++= 0;
+    *b++= 0;
+    *b++= 0;
+    row_log_table_close(index, b, 4, avail_size);
+  }
 }

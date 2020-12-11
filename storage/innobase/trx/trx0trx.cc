@@ -1746,6 +1746,14 @@ trx_mark_sql_stat_end(
 			fts_savepoint_laststmt_refresh(trx);
 		}
 
+		for (auto iter = trx->mod_tables.begin();
+		     iter != trx->mod_tables.end();
+		     ++iter) {
+			if (iter->first->bulk_trx_id == trx->id
+			    || UT_LIST_GET_LEN(trx->trx_savepoints))
+				iter->first->allow_insert_undo= true;
+		}
+
 		return;
 	}
 

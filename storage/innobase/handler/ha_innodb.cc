@@ -15382,6 +15382,12 @@ ha_innobase::extra(
 		trx_register_for_2pc(m_prebuilt->trx);
 		m_prebuilt->sql_stat_start = true;
 		break;
+	case HA_EXTRA_IGNORE_INSERT:
+		if (m_prebuilt->table->bulk_trx_id == m_prebuilt->trx->id
+		    || UT_LIST_GET_LEN(m_prebuilt->trx->trx_savepoints)) {
+			m_prebuilt->table->allow_insert_undo= true;
+		}
+		break;
 	default:/* Do nothing */
 		;
 	}

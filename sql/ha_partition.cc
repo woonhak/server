@@ -9146,6 +9146,8 @@ int ha_partition::extra(enum ha_extra_function operation)
   case HA_EXTRA_END_ALTER_COPY:
   case HA_EXTRA_FAKE_START_STMT:
     DBUG_RETURN(loop_partitions(extra_cb, &operation));
+  case HA_EXTRA_IGNORE_INSERT:
+    DBUG_RETURN(loop_partitions(extra_cb, &operation));
   default:
   {
     /* Temporary crash to discover what is wrong */
