@@ -9229,6 +9229,9 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
     wsrep= true;
     if (id && (tmp= find_thread_by_id_with_thd_data_lock(id, type == KILL_TYPE_QUERY)))
     {
+      // THD::wsrep_aborter is protected by LOCK_thd_data mutex
+      mysql_mutex_assert_owner(&tmp->LOCK_thd_data);
+
       if (tmp->wsrep_aborter)
       {
         /* victim is in hit list already, bail out */
@@ -9298,6 +9301,9 @@ kill_one_thread(THD *thd, longlong id, killed_state kill_signal, killed_type typ
 #endif /* WITH_WSREP */
     {
 #ifdef WITH_WSREP
+      // THD::wsrep_aborter is protected by LOCK_thd_data mutex
+      mysql_mutex_assert_owner(&tmp->LOCK_thd_data);
+
       if (tmp->wsrep_aborter && tmp->wsrep_aborter != tmp->thread_id)
       {
         /* victim is in hit list already, bail out */

@@ -18702,8 +18702,15 @@ comparison as in the local certification failure.
 
 @param[in]	bf_thd		Brute force (BF) thread
 @param[in,out]	victim_trx	Vimtim trx to be killed
-@param[in]	signal		Should victim be signaled */
-int wsrep_innobase_kill_one_trx(THD *bf_thd, trx_t *victim_trx, bool signal)
+@param[in]	signal		Should victim be killed
+				with THD::awake() or
+				replayed */
+UNIV_INTERN
+int
+wsrep_innobase_kill_one_trx(
+	THD* bf_thd,
+	trx_t *victim_trx,
+	bool signal)
 {
 	ut_ad(bf_thd);
 	ut_ad(victim_trx);
@@ -18714,6 +18721,7 @@ int wsrep_innobase_kill_one_trx(THD *bf_thd, trx_t *victim_trx, bool signal)
 
 	THD *thd= victim_trx->mysql_thd;
 	ut_ad(thd);
+
 	/* Note that bf_trx might not exist here e.g. on MDL conflict
 	case (test: galera_concurrent_ctas). Similarly, BF thread
 	could be also acquiring MDL-lock causing victim to be
@@ -18725,8 +18733,8 @@ int wsrep_innobase_kill_one_trx(THD *bf_thd, trx_t *victim_trx, bool signal)
 	WSREP_LOG_CONFLICT(bf_thd, thd, TRUE);
 
 	WSREP_DEBUG("Aborter %s trx_id: " TRX_ID_FMT " thread: %ld "
-		"seqno: %lld client_state: %s client_mode: %s transaction_mode: %s "
-		"query: %s",
+		"seqno: %lld client_state: %s client_mode: %s "
+		"transaction_mode: %s query: %s",
 		wsrep_thd_is_BF(bf_thd, false) ? "BF" : "normal",
 		bf_trx ? bf_trx->id : TRX_ID_MAX,
 		thd_get_thread_id(bf_thd),
@@ -18737,8 +18745,8 @@ int wsrep_innobase_kill_one_trx(THD *bf_thd, trx_t *victim_trx, bool signal)
 		wsrep_thd_query(bf_thd));
 
 	WSREP_DEBUG("Victim %s trx_id: " TRX_ID_FMT " thread: %ld "
-		"seqno: %lld client_state: %s  client_mode: %s transaction_mode: %s "
-		"query: %s",
+		"seqno: %lld client_state: %s  client_mode: %s "
+		"transaction_mode: %s query: %s",
 		wsrep_thd_is_BF(thd, false) ? "BF" : "normal",
 		victim_trx->id,
 		thd_get_thread_id(thd),
