@@ -1512,6 +1512,24 @@ void buf_flush_wait_batch_end(bool lru)
   }
 }
 
+/** Whether a background log flush is pending */
+static std::atomic_flag log_flush_pending;
+
+/** Advance log_sys.get_flushed_lsn() */
+static void log_flush(void *)
+{
+  /* Between batches, we try to prevent I/O stalls by these calls.
+  This should not be needed for correctness. */
+  os_aio_wait_until_no_pending_writes();
+  fil_flush_file_spaces();
+
+  /* Guarantee progress for buf_flush_lists(). */
+  log_write_up_to(log_sys.get_lsn(), true);
+  log_flush_pending.clear();
+}
+
+static tpool::waitable_task log_flush_task(log_flush, nullptr, nullptr);
+
 /** Write out dirty blocks from buf_pool.flush_list.
 @param max_n    wished maximum mumber of blocks flushed
 @param lsn      buf_pool.get_oldest_modification(LSN_MAX) target (0=LRU flush)
@@ -1526,8 +1544,14 @@ ulint buf_flush_lists(ulint max_n, lsn_t lsn)
 
   if (log_sys.get_lsn() > log_sys.get_flushed_lsn())
   {
-    /* Guarantee progress for buf_flush_lists(). */
-    log_write_up_to(log_sys.get_lsn(), true);
+    log_flush_task.wait();
+    if (log_sys.get_lsn() > log_sys.get_flushed_lsn() &&
+        !log_flush_pending.test_and_set())
+      srv_thread_pool->submit_task(&log_flush_task);
+#if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
+    if (UNIV_UNLIKELY(ibuf_debug))
+      log_write_up_to(log_sys.get_lsn(), true);
+#endif
   }
 
   auto cond= lsn ? &buf_pool.done_flush_list : &buf_pool.done_flush_LRU;
@@ -2188,6 +2212,7 @@ next:
     buf_flush_wait_batch_end_acquiring_mutex(false);
   }
 
+  log_flush_task.wait();
 
   mysql_mutex_lock(&buf_pool.flush_list_mutex);
   lsn_limit= buf_flush_sync_lsn;
@@ -2255,6 +2280,7 @@ ATTRIBUTE_COLD void buf_flush_buffer_pool()
   }
 
   ut_ad(!buf_pool.any_io_pending());
+  log_flush_task.wait();
 }
 
 /** Synchronously flush dirty blocks.
