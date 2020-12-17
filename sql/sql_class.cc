@@ -1614,6 +1614,32 @@ void THD::cleanup(void)
 void THD::free_connection()
 {
   DBUG_ASSERT(free_connection_done == 0);
+  /* Make sure threads are not available via server_threads.  */
+  assert_not_linked();
+#ifdef WITH_WSREP
+  /*
+    Other WSREP threads may have a lock on THD::LOCK_thd_data and
+    THD::wsrep_rgi should be protected with THD::LOCK_thd_data mutex and
+    mutexing ordering rules state that THD::LOCK_thd_data must be taken
+    before THD::LOCK_thd_kill.
+  */
+  bool is_wsrep= WSREP(this);
+  if (is_wsrep) mysql_mutex_lock(&LOCK_thd_data);
+#endif
+  /*
+    Other threads may have a lock on THD::LOCK_thd_kill to ensure that this
+    THD is not deleted while they access it. The following mutex_lock
+    ensures that no one else is using this THD and it's now safe to
+    continue.
+  */
+  mysql_mutex_lock(&LOCK_thd_kill);
+  mysql_mutex_unlock(&LOCK_thd_kill);
+
+#ifdef WITH_WSREP
+  delete wsrep_rgi;
+  wsrep_rgi= 0;
+  if (is_wsrep) mysql_mutex_unlock(&LOCK_thd_data);
+#endif
   my_free((char*) db.str);
   db= null_clex_str;
 #ifndef EMBEDDED_LIBRARY
@@ -1690,24 +1716,10 @@ THD::~THD()
   if (!status_in_global)
     add_status_to_global();
 
-  /*
-    Other threads may have a lock on LOCK_thd_kill to ensure that this
-    THD is not deleted while they access it. The following mutex_lock
-    ensures that no one else is using this THD and it's now safe to delete
-  */
-  if (WSREP_NNULL(this)) mysql_mutex_lock(&LOCK_thd_data);
-  mysql_mutex_lock(&LOCK_thd_kill);
-  mysql_mutex_unlock(&LOCK_thd_kill);
-  if (WSREP_NNULL(this)) mysql_mutex_unlock(&LOCK_thd_data);
-
   if (!free_connection_done)
     free_connection();
 
 #ifdef WITH_WSREP
-  if (wsrep_rgi != NULL) {
-    delete wsrep_rgi;
-    wsrep_rgi = NULL;
-  }
   mysql_cond_destroy(&COND_wsrep_thd);
 #endif
   mdl_context.destroy();
