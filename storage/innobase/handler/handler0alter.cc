@@ -9478,6 +9478,12 @@ ha_innobase::commit_inplace_alter_table(
 				ctx, ha_alter_info, altered_table)) {
 			DBUG_RETURN(true);
 		}
+		else if (ctx->new_table->n_v_cols) {
+			dict_free_vc_templ(ctx->new_table->vc_templ);
+			UT_DELETE(ctx->new_table->vc_templ);
+			ctx->new_table->vc_templ = NULL;
+
+		}
 	}
 
 	if (!trx) {

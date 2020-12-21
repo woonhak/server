@@ -423,6 +423,8 @@ row_mysql_store_col_in_innobase_format(
 
 	type = dtype->mtype;
 
+	MEM_CHECK_DEFINED(mysql_data, col_len);
+
 	if (type == DATA_INT) {
 		/* Store integer data in Innobase in a big-endian format,
 		sign bit negated if the data is a signed integer. In MySQL,
