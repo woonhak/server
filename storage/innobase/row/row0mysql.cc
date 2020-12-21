@@ -1096,6 +1096,12 @@ row_get_prebuilt_insert_row(
 		    && prebuilt->ins_node->entry_list.size()
 		    == UT_LIST_GET_LEN(table->indexes)) {
 
+			if (prebuilt->ins_node->bulk_insert
+			    && prebuilt->ins_node->trx_id
+			       != prebuilt->trx->id) {
+				prebuilt->ins_node->bulk_insert= false;
+			}
+
 			return(prebuilt->ins_node->row);
 		}
 

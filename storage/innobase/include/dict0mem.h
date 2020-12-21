@@ -1368,6 +1368,9 @@ public:
 	everything in overflow) size of the longest possible row and index
 	of a field which made index records too big to fit on a page.*/
 	inline record_size_info_t record_size_info() const;
+
+	/** Empty the index content and reinitialize the root page */
+	void empty(que_thr_t *thr);
 };
 
 /** Detach a virtual column from an index.
@@ -1950,6 +1953,14 @@ struct dict_table_t {
 			char (&tbl_name)[NAME_LEN + 1],
 			size_t *db_name_len, size_t *tbl_name_len) const;
 
+  /** Empty the table */
+  void empty_table(que_thr_t *thr);
+
+  void remove_bulk_trx()
+  {
+    bulk_trx_id_= 0;
+  }
+
 private:
 	/** Initialize instant->field_map.
 	@param[in]	table	table definition to copy from */
@@ -2299,6 +2310,9 @@ private:
 	itself check the number of open handles at DROP. */
 	Atomic_counter<uint32_t>		n_ref_count;
 
+	/** Trx id of bulk insert operation. This is under the
+	protection of exclusive lock of table object */
+	Atomic_relaxed<trx_id_t>		bulk_trx_id_;
 public:
 	/** List of locks on the table. Protected by lock_sys.mutex. */
 	table_lock_list_t			locks;
@@ -2316,6 +2330,16 @@ public:
 	/** mysql_row_templ_t for base columns used for compute the virtual
 	columns */
 	dict_vcol_templ_t*			vc_templ;
+
+  trx_id_t bulk_trx_id() const
+  {
+    return bulk_trx_id_;
+  }
+
+  void set_bulk_trx_id(trx_id_t trx_id)
+  {
+    bulk_trx_id_= trx_id;
+  }
 };
 
 inline void dict_index_t::set_modified(mtr_t& mtr) const

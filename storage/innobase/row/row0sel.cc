@@ -4593,6 +4593,17 @@ wait_table_again:
 		}
 	}
 
+	if (trx_id_t bulk_trx_id = index->table->bulk_trx_id()) {
+		if (trx->isolation_level != TRX_ISO_READ_UNCOMMITTED
+		    && trx->read_view.is_open()
+		    && !trx->read_view.changes_visible(
+				bulk_trx_id, index->table->name)) {
+			trx->op_info = "";
+			err = DB_END_OF_INDEX;
+			goto normal_return;
+		}
+	}
+
 	/* Open or restore index cursor position */
 
 	if (UNIV_LIKELY(direction != 0)) {

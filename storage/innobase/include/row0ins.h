@@ -174,7 +174,8 @@ struct ins_node_t
 		row(NULL), table(table), select(NULL), values_list(NULL),
 		state(INS_NODE_SET_IX_LOCK), index(NULL),
 		entry_list(), entry(entry_list.end()),
-		trx_id(0), entry_sys_heap(mem_heap_create(128))
+		trx_id(0), entry_sys_heap(mem_heap_create(128)),
+		bulk_insert(false)
 	{
 	}
 	que_common_t common;	 /*!< node type: QUE_NODE_INSERT */
@@ -205,7 +206,10 @@ struct ins_node_t
 				entry_list and sys fields are stored here;
 				if this is NULL, entry list should be created
 				and buffers for sys fields in row allocated */
-        void vers_update_end(row_prebuilt_t *prebuilt, bool history_row);
+	/** Bulk insert enabled for this table */
+	bool		bulk_insert;
+
+	void vers_update_end(row_prebuilt_t *prebuilt, bool history_row);
 };
 
 /** Create an insert object.

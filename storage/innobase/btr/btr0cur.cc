@@ -67,6 +67,7 @@ Created 10/16/1994 Heikki Tuuri
 #include "srv0start.h"
 #include "mysql_com.h"
 #include "dict0stats.h"
+#include "row0ins.h"
 
 /** Buffered B-tree operation types, introduced as part of delete buffering. */
 enum btr_op_t {
@@ -3214,7 +3215,6 @@ btr_cur_ins_lock_and_undo(
 	dberr_t		err = DB_SUCCESS;
 	rec_t*		rec;
 	roll_ptr_t	roll_ptr;
-
 	/* Check if we have to wait for a lock: enqueue an explicit lock
 	request if yes */
 
@@ -3225,6 +3225,14 @@ btr_cur_ins_lock_and_undo(
 	      || dict_index_is_clust(index)
 	      || (flags & BTR_CREATE_FLAG));
 	ut_ad(mtr->is_named_space(index->table->space));
+	bool write_empty = thr
+			   && thr->run_node
+			   && que_node_get_type(thr->run_node)
+				== QUE_NODE_INSERT
+			   && static_cast<ins_node_t*>(
+				thr->run_node)->bulk_insert
+			   && !thr_get_trx(thr)->allow_insert_undo(
+				index->table);
 
 	/* Check if there is predicate or GAP lock preventing the insertion */
 	if (!(flags & BTR_NO_LOCKING_FLAG)) {
@@ -3273,6 +3281,20 @@ upd_sys:
 						    NULL, 0, NULL, NULL,
 						    &roll_ptr);
 		if (err == DB_SUCCESS) {
+
+			if (index->table->no_rollback()) {
+			} else if (write_empty) {
+				roll_ptr = roll_ptr_t(1)
+					<< ROLL_PTR_INSERT_FLAG_POS;
+			} else {
+				trx_t* trx = thr_get_trx(thr);
+				dfield_t *r = dtuple_get_nth_field(
+					entry, index->db_trx_id());
+				trx_write_trx_id(
+					static_cast<byte*>(r->data),
+					trx->id);
+			}
+
 			goto upd_sys;
 		}
 	}
@@ -3510,7 +3532,9 @@ fail_err:
 				ut_ad(thr->graph->trx->id
 				      == trx_read_trx_id(
 					      static_cast<const byte*>(
-						      trx_id->data)));
+						      trx_id->data))
+				      || static_cast<ins_node_t*>(
+					     thr->run_node)->bulk_insert);
 			}
 		}
 #endif
@@ -3566,7 +3590,7 @@ fail_err:
 	} else if (entry->info_bits & REC_INFO_MIN_REC_FLAG) {
 		ut_ad(entry->is_metadata());
 		ut_ad(index->is_instant());
-		ut_ad(flags == BTR_NO_LOCKING_FLAG);
+		ut_ad(flags & BTR_NO_LOCKING_FLAG);
 	} else {
 		srw_lock* ahi_latch = btr_search_sys.get_latch(*index);
 		if (!reorg && cursor->flag == BTR_CUR_HASH) {
@@ -5505,7 +5529,13 @@ btr_cur_optimistic_delete_func(
 			if (index->is_instant()) {
 				/* MDEV-17383: free metadata BLOBs! */
 				index->clear_instant_alter();
+				index->table->remove_bulk_trx();
 			}
+
+			if (dict_index_is_clust(index)) {
+				index->table->remove_bulk_trx();
+			}
+
 			page_cur_set_after_last(block,
 						btr_cur_get_page_cur(cursor));
 			goto func_exit;
@@ -5723,6 +5753,11 @@ btr_cur_pessimistic_delete(
 					/* MDEV-17383: free metadata BLOBs! */
 					index->clear_instant_alter();
 				}
+
+				if (dict_index_is_clust(index)) {
+					index->table->remove_bulk_trx();
+				}
+
 				page_cur_set_after_last(
 					block,
 					btr_cur_get_page_cur(cursor));

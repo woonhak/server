@@ -3604,6 +3604,25 @@ lock_table_ix_resurrect(
 	mutex->wr_unlock();
 }
 
+void
+lock_table_x_resurrect(dict_table_t *table,trx_t *trx)
+{
+  ut_ad(trx->is_recovered);
+  if (lock_table_has(trx, table, LOCK_X))
+    return;
+
+  auto mutex= &trx->mutex;
+  lock_sys.mutex_lock();
+  /* We have to check if the new lock is compatible with any locks
+  other transactions have in the table lock queue. */
+  ut_ad(!lock_table_other_has_incompatible(trx, LOCK_WAIT, table, LOCK_X));
+
+  mutex->wr_lock();
+  lock_table_create(table, LOCK_X, trx);
+  lock_sys.mutex_unlock();
+  mutex->wr_unlock();
+}
+
 /*********************************************************************//**
 Checks if a waiting table lock request still has to wait in a queue.
 @return TRUE if still has to wait */
