@@ -205,7 +205,10 @@ struct ins_node_t
 				entry_list and sys fields are stored here;
 				if this is NULL, entry list should be created
 				and buffers for sys fields in row allocated */
-        void vers_update_end(row_prebuilt_t *prebuilt, bool history_row);
+	/** Bulk insert enabled for this table */
+	bool		bulk_insert= false;
+
+	void vers_update_end(row_prebuilt_t *prebuilt, bool history_row);
 };
 
 /** Create an insert object.
