@@ -1237,6 +1237,8 @@ extern void log_register_wait(lsn_t lsn, bool flush, void (*f)(void *),
  @param lsn_t lsn
  @params trx_state
 */
+#include "../log/log0sync.h"
+
 static void trx_flush_log_if_needed_low(lsn_t lsn, trx_state_t trx_state)
 {
   if (!srv_flush_log_at_trx_commit)
@@ -1246,6 +1248,7 @@ static void trx_flush_log_if_needed_low(lsn_t lsn, trx_state_t trx_state)
     return;
   bool flush= need_to_flush_log();
 
+
   if (trx_state == TRX_STATE_PREPARED)
   {
     /* XA, which is used with binlog as well.
@@ -1254,18 +1257,16 @@ static void trx_flush_log_if_needed_low(lsn_t lsn, trx_state_t trx_state)
     return;
   }
 
-  initiate_background_log_write_if_needed();
+  //initiate_background_log_write_if_needed();
+  completion_callback cb;
+  if ((cb.m_param = thd_increment_pending_ops()))
+	{
+	  cb.m_callback = (void (*)(void *)) thd_decrement_pending_ops;
+	  log_write_up_to(lsn, flush, false, &cb);
+		return;
+	}
 
-  MYSQL_THD thd= thd_increment_pending_ops();
-  if (!thd)
-  {
-    /* This might be dictionary recalculations.*/
-    log_write_up_to(lsn, flush);
-    return;
-  }
-
-  log_register_wait(lsn, flush, (void (*)(void *)) thd_decrement_pending_ops,
-                    thd);
+	log_write_up_to(lsn, flush);
 }
 
 /**********************************************************************//**

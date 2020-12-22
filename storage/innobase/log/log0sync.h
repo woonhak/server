@@ -21,6 +21,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <vector>
 
 struct group_commit_waiter_t;
+struct completion_callback
+{
+  void (*m_callback)(void*);
+  void* m_param;
+};
 
 /**
 Special synchronization primitive, which is helpful for
@@ -53,12 +58,6 @@ Operations supported on this semaphore
 
 5. set_pending_value()
 */
-struct completion_callback
-{
-  void (*m_callback)(void*);
-  void* m_param;
-};
-
 class group_commit_lock
 {
   using value_type = lsn_t;
@@ -77,10 +76,10 @@ public:
   enum lock_return_code
   {
     ACQUIRED,
-    EXPIRED
+    EXPIRED,
+    CALLBACK_QUEUED
   };
-  lock_return_code acquire(value_type num);
-  void register_wait(value_type num, completion_callback& callback);
+  lock_return_code acquire(value_type num, const completion_callback *cb);
   void release(value_type num);
   value_type value() const;
   value_type pending() const;
