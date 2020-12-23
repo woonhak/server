@@ -5390,5 +5390,18 @@ ERROR HY000: Default/ignore value is not supported for such parameter usage
 EXECUTE IMMEDIATE 'SHOW DATABASES WHERE ?' USING 0;
 Database
 #
+# MDEV-24208 SHOW RELAYLOG EVENTS command is not supported in the prepared statement protocol yet
+#
+PREPARE stmt_1 FROM 'SHOW RELAYLOG EVENTS';
+EXECUTE stmt_1;
+Log_name	Pos	Event_type	Server_id	End_log_pos	Info
+# Execute the same prepared statement the second time to check that
+# no internal structures used for handling the 'SHOW RELAYLOG EVENTS'
+# statement were damaged.
+EXECUTE stmt_1;
+Log_name	Pos	Event_type	Server_id	End_log_pos	Info
+# Clean up
+DEALLOCATE PREPARE stmt_1;
+#
 # End of 10.2 tests
 #
